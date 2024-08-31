@@ -1,0 +1,188 @@
+mkdir shopper-backend
+cd shopper-backend
+npm init -y
+
+npm install express body-parser axios
+npm install --save-dev typescript @types/node @types/express ts-node
+
+mkdir src
+touch src/index.ts
+touch src/routes.ts
+touch src/db.ts
+
+import express from 'express';
+import bodyParser from 'body-parser';
+import routes from './routes';
+
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.use(bodyParser.json());
+app.use('/api', routes);
+
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
+
+import { Router, Request, Response } from 'express';
+import axios from 'axios';
+import { v4 as uuidv4 } from 'uuid';
+
+const router = Router();
+
+// Mock database
+const measures = new Map<string, any>();
+
+// POST /upload
+router.post('/upload', async (req: Request, res: Response) => {
+  const { image, customer_code, measure_datetime, measure_type } = req.body;
+
+  if (typeof image !== 'string' || typeof customer_code !== 'string' ||
+      typeof measure_datetime !== 'string' || (measure_type !== 'WATER' && measure_type !== 'GAS')) {
+    return res.status(400).json({
+      error_code: 'INVALID_DATA',
+      error_description: 'Dados inválidos fornecidos'
+    });
+  }
+
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const year = now.getFullYear();
+  const key = `${customer_code}-${measure_type}-${year}-${month}`;
+
+  if (measures.has(key)) {
+    return res.status(409).json({
+      error_code: 'DOUBLE_REPORT',
+      error_description: 'Leitura do mês já realizada'
+    });
+  }
+
+  try {
+    // Call to Gemini API (Mocked)
+    const response = await axios.post('https://api.gemini.com/vision', { image });
+    const { image_url, measure_uuid, measure_value } = response.data;
+
+    measures.set(key, {
+      image_url,
+      measure_value,
+      measure_uuid,
+      customer_code,
+      measure_datetime,
+      measure_type
+    });
+
+    res.status(200).json({
+      image_url,
+      measure_value,
+      measure_uuid
+    });
+  } catch (error) {
+    res.status(500).json({
+      error_code: 'INTERNAL_ERROR',
+      error_description: 'Erro ao processar a imagem'
+    });
+  }
+});
+
+// PATCH /confirm
+router.patch('/confirm', (req: Request, res: Response) => {
+  const { measure_uuid, confirmed_value } = req.body;
+
+  if (typeof measure_uuid !== 'string' || typeof confirmed_value !== 'number') {
+    return res.status(400).json({
+      error_code: 'INVALID_DATA',
+      error_description: 'Dados inválidos fornecidos'
+    });
+  }
+
+  const key = [...measures.values()].find(m => m.measure_uuid === measure_uuid);
+  if (!key) {
+    return res.status(404).json({
+      error_code: 'MEASURE_NOT_FOUND',
+      error_description: 'Leitura não encontrada'
+    });
+  }
+
+  if (key.has_confirmed) {
+    return res.status(409).json({
+      error_code: 'CONFIRMATION_DUPLICATE',
+      error_description: 'Leitura já confirmada'
+    });
+  }
+
+  key.measure_value = confirmed_value;
+  key.has_confirmed = true;
+
+  res.status(200).json({ success: true });
+});
+
+// GET /<customer_code>/list
+router.get('/:customer_code/list', (req: Request, res: Response) => {
+  const { customer_code } = req.params;
+  const measure_type = req.query.measure_type as string;
+
+  if (measure_type && !['WATER', 'GAS'].includes(measure_type.toUpperCase())) {
+    return res.status(400).json({
+      error_code: 'INVALID_TYPE',
+      error_description: 'Tipo de medição não permitido'
+    });
+  }
+
+  const results = [...measures.values()].filter(m => m.customer_code === customer_code &&
+    (!measure_type || m.measure_type.toUpperCase() === measure_type.toUpperCase()));
+
+  if (results.length === 0) {
+    return res.status(404).json({
+      error_code: 'MEASURES_NOT_FOUND',
+      error_description: 'Nenhuma leitura encontrada'
+    });
+  }
+
+  res.status(200).json({
+    customer_code,
+    measures: results
+  });
+});
+
+export default router;
+
+# Use a imagem oficial do Node.js
+FROM node:18
+
+# Crie um diretório para a aplicação
+WORKDIR /usr/src/app
+
+# Copie os arquivos package.json e package-lock.json
+COPY package*.json ./
+
+# Instale as dependências
+RUN npm install
+
+# Copie o restante do código
+COPY . .
+
+# Compile o TypeScript
+RUN npx tsc
+
+# Exponha a porta da aplicação
+EXPOSE 3000
+
+# Comando para iniciar a aplicação
+CMD ["node", "dist/index.js"]
+version: '3'
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
+docker-compose up --build
+git init
+git add .
+git commit -m "Initial commit"
+node_modules
+dist
+.env
